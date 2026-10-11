@@ -656,11 +656,31 @@ def current_interval(cfg):
     return cfg["interval_seconds"]
 
 
+def avoid_burst_handover(cfg, start_ts, max_seconds):
+    """别在放场冲刺时交班：本班若会在冲刺开始前 15 分钟到冲刺结束之间结束，就提前到冲刺前 18 分钟收工，
+    让下一班在冲刺前就位。返回调整后的 max_seconds。"""
+    end = datetime.fromtimestamp(start_ts + max_seconds, BEIJING)
+    for w in cfg["burst_windows"]:
+        if w["interval_seconds"] >= cfg["interval_seconds"]:
+            continue  # 只管加速的窗口（凌晨减速的不算）
+        ws = end.replace(hour=_minutes(w["start"]) // 60, minute=_minutes(w["start"]) % 60, second=0, microsecond=0)
+        we = end.replace(hour=_minutes(w["end"]) // 60, minute=_minutes(w["end"]) % 60, second=0, microsecond=0)
+        if ws - timedelta(minutes=15) <= end < we:
+            return max(60, int((ws - timedelta(minutes=18)).timestamp() - start_ts))
+    return max_seconds
+
+
 def loop(cfg, max_seconds=None):
     """持续轮询。max_seconds 用于 GitHub Actions：到点就退出，交给下一班接力。"""
     start = time.time()
+    if max_seconds:
+        max_seconds = avoid_burst_handover(cfg, start, max_seconds)
     st = load_state(cfg["state_file"])
-    log("开始监控" + (f"（本班最多 {max_seconds // 60} 分钟）" if max_seconds else "（Ctrl+C 退出）"))
+    if max_seconds:
+        until = datetime.fromtimestamp(start + max_seconds, BEIJING)
+        log(f"开始监控（本班到 {until:%m-%d %H:%M} 交班）")
+    else:
+        log("开始监控（Ctrl+C 退出）")
     while True:
         left = (max_seconds - (time.time() - start)) if max_seconds else None
         if left is not None and left <= 0:

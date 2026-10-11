@@ -180,6 +180,18 @@ class RulesTest(unittest.TestCase):
         self.assertTrue(sent[1][0].startswith("[测试] 🔥 特别提醒·连续场："))
         self.assertIn("19-21点 羽2（连续2小时）", sent[1][0])
 
+    def test_avoid_burst_handover(self):
+        def ts(h, mi):
+            return datetime(2026, 10, 12, h, mi, tzinfo=m.BEIJING).timestamp()
+        five_half = 330 * 60
+        # 02:00 开班 → 07:30 才交班，正撞 7:30 放场 → 提前到 07:10
+        got = m.avoid_burst_handover(self.cfg, ts(2, 0), five_half)
+        self.assertEqual(datetime.fromtimestamp(ts(2, 0) + got, m.BEIJING).strftime("%H:%M"), "07:10")
+        # 01:00 开班 → 06:30 交班，离冲刺远 → 不动
+        self.assertEqual(m.avoid_burst_handover(self.cfg, ts(1, 0), five_half), five_half)
+        # 07:12 开班 → 12:42 交班 → 不动
+        self.assertEqual(m.avoid_burst_handover(self.cfg, ts(7, 12), five_half), five_half)
+
     def test_test_email_body(self):
         body = m.test_email_body(self.cfg)
         self.assertIn("特别提醒", body)
