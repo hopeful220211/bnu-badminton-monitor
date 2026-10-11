@@ -16,8 +16,9 @@ on:
         options: [loop, test-email, check]
         default: loop
 
+# 定时/loop 共用一个队列前后接力；手动的 test-email、check 单独排队，不用等长跑结束
 concurrency:
-  group: badminton-monitor
+  group: badminton-monitor-${{ (inputs.mode == 'test-email' || inputs.mode == 'check') && inputs.mode || 'loop' }}
   cancel-in-progress: false
 
 # contents: write 用于 keepalive 空提交（仓库 60 天没有提交，GitHub 会自动停用定时任务）
