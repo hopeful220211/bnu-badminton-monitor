@@ -64,6 +64,10 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
+          if [ -z "$BNU_REQUEST_CURL" ] && [ "${{ inputs.mode }}" != "test-email" ]; then
+            echo "还没配置 Secret BNU_REQUEST_CURL，跳过本次监控"
+            exit 0
+          fi
           case "${{ inputs.mode }}" in
             test-email) python monitor.py --test-email ;;
             check)      python monitor.py --check ;;
