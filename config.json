@@ -13,6 +13,9 @@
     {"start": "00:00", "end": "06:30", "interval_seconds": 300}
   ],
 
+  "time_range": ["10:00", "22:00"],
+  "court_regex": "^羽[1-8]$",
+  "streak_min": 2,
   "include_times": [],
   "include_courts": [],
   "notify_first_run": true,
@@ -24,7 +27,7 @@
     "message_field": "message",
     "list_path": "data.sjkcds.*.sjklist.*",
     "free_when": {"field": "ostatus", "in": [0]},
-    "fields": {"time": "xsj", "court": "cdmc", "where": "cdwz"}
+    "fields": {"time": "xsj", "court": "cdmc"}
   },
 
   "smtp": {

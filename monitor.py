@@ -49,6 +49,9 @@ DEFAULTS = {
     "timeout_seconds": 15,
     "include_times": [],
     "include_courts": [],
+    "time_range": [],
+    "court_regex": "",
+    "streak_min": 2,
     "notify_first_run": True,
     "failure_alert_after": 5,
     "daily_report_at": "",
@@ -310,10 +313,106 @@ def slot_key(slot):
     return " | ".join(f"{k}={slot[k]}" for k in sorted(slot))
 
 
+DAY_TAGS = {0: "今天", 1: "明天", 2: "后天", 3: "大后天"}
+
+
+def _span(time_str):
+    """'08:00-09:00' -> (480, 540)，单位分钟；解析不了返回 None。"""
+    m = re.findall(r"(\d{1,2}):(\d{2})", time_str or "")
+    if len(m) < 2:
+        return None
+    (h1, m1), (h2, m2) = m[:2]
+    return int(h1) * 60 + int(m1), int(h2) * 60 + int(m2)
+
+
+def _hm(mins):
+    h, m = divmod(mins, 60)
+    return f"{h}" if m == 0 else f"{h}:{m:02d}"
+
+
+def short_time(time_str):
+    """'08:00-09:00' -> '8-9点'。"""
+    span = _span(time_str)
+    return f"{_hm(span[0])}-{_hm(span[1])}点" if span else time_str
+
+
+def date_label(date_str, t=None):
+    """'2026-10-14' -> '2026-10-14（后天）'。"""
+    t = t or now()
+    try:
+        d = datetime.strptime(re.sub(r"\D", "", date_str)[:8], "%Y%m%d").date()
+    except ValueError:
+        return date_str
+    tag = DAY_TAGS.get((d - t.date()).days)
+    return f"{date_str}（{tag}）" if tag else date_str
+
+
 def slot_text(slot):
-    main = [slot.get(k, "") for k in ("date", "time", "court", "where")]
+    main = [date_label(slot.get("date", "")), short_time(slot.get("time", "")), slot.get("court", "")]
     extra = [f"{k}:{v}" for k, v in slot.items() if k not in ("date", "time", "court", "where") and v]
-    return "  ".join(x for x in main + extra if x)
+    return " ".join(x for x in main + extra if x)
+
+
+def _order(slot):
+    """排序：日期 → 场地号（羽2 在 羽10 前）→ 开始时间。"""
+    court = slot.get("court", "")
+    num = re.findall(r"\d+", court)
+    return (slot.get("date", ""), court.rstrip("0123456789"), int(num[-1]) if num else 0,
+            (_span(slot.get("time")) or (0, 0))[0])
+
+
+def find_runs(free, min_len):
+    """同一天、同一场地、时间首尾相接的空场连成一段，返回长度 >= min_len 的段（每段是 key 列表）。"""
+    groups = {}
+    for k, slot in free.items():
+        span = _span(slot.get("time"))
+        if span:
+            groups.setdefault((slot.get("date"), slot.get("court")), []).append((span, k))
+    runs = []
+    for items in groups.values():
+        items.sort()
+        cur = [items[0]]
+        for it in items[1:]:
+            if it[0][0] == cur[-1][0][1]:
+                cur.append(it)
+                continue
+            if len(cur) >= min_len:
+                runs.append(cur)
+            cur = [it]
+        if len(cur) >= min_len:
+            runs.append(cur)
+    return [[k for _, k in r] for r in runs]
+
+
+def run_text(free, keys):
+    first, last = free[keys[0]], free[keys[-1]]
+    start, end = _span(first["time"])[0], _span(last["time"])[1]
+    hours = (end - start) / 60
+    hours = int(hours) if hours == int(hours) else round(hours, 1)
+    return f"{date_label(first.get('date', ''))} {_hm(start)}-{_hm(end)}点 {first.get('court', '')}（连续{hours}小时）"
+
+
+def compose_email(free, new_keys, first, min_run):
+    """新空场的邮件 (标题, 正文)。新空场和已有空场连成 >= min_run 场时，作为特别提醒。"""
+    new = set(new_keys)
+    runs = [r for r in find_runs(free, min_run) if new & set(r)]
+    runs.sort(key=lambda r: (-len(r), _order(free[r[0]])))
+    in_run = {k for r in runs for k in r}
+    singles = sorted((k for k in new if k not in in_run), key=lambda k: _order(free[k]))
+    label = "当前空场" if first else "新空场"
+    parts = []
+    if runs:
+        parts.append(f"🔥 连续{min_run}场及以上（{len(runs)} 段）：\n" + "\n".join("  • " + run_text(free, r) for r in runs))
+    if singles:
+        head = "其他" + label if runs else label
+        parts.append(f"{head}（{len(singles)} 个）：\n" + "\n".join("  • " + slot_text(free[k]) for k in singles))
+    if runs:
+        more = f" 等{len(runs)}段" if len(runs) > 1 else ""
+        subject = f"🔥 特别提醒·连续场：{run_text(free, runs[0])}{more}"
+    else:
+        more = f" 等{len(singles)}个" if len(singles) > 1 else ""
+        subject = f"🏸 {label}：{slot_text(free[singles[0]])}{more}"
+    return subject, "\n\n".join(parts)
 
 
 def already_started(slot, t=None):
@@ -329,6 +428,13 @@ def wanted(slot, cfg):
     if already_started(slot):
         return False
     t, c = slot.get("time", ""), slot.get("court", "")
+    if cfg["time_range"]:
+        span = _span(t)
+        lo, hi = (_minutes(x) for x in cfg["time_range"])
+        if not span or span[0] < lo or span[1] > hi:
+            return False
+    if cfg["court_regex"] and not re.search(cfg["court_regex"], c):
+        return False
     if cfg["include_times"] and not any(x in t for x in cfg["include_times"]):
         return False
     if cfg["include_courts"] and not any(x in c for x in cfg["include_courts"]):
@@ -505,15 +611,8 @@ def run_once(cfg, st, send=True):
 
     to_notify = new_keys if (not first or cfg["notify_first_run"]) else []
     if send and to_notify:
-        lines = [slot_text(free[k]) for k in to_notify]
-        others = sorted(slot_text(free[k]) for k in free if k not in to_notify)
-        title = "当前空余场地" if first else "新出现空余场地"
-        body = f"{title}（{len(lines)} 个）：\n\n" + "\n".join("  • " + x for x in lines)
-        if others:
-            body += "\n\n之前就空着、现在仍空着的：\n" + "\n".join("  · " + x for x in others)
-        body += f"\n\n去预约：{cfg['booking_url']}\n检测时间：{stamp}"
-        more = f" 等{len(lines)}个" if len(lines) > 1 else ""
-        if not notify(cfg, f"🏸 {title}：{lines[0]}{more}", body):
+        subject, body = compose_email(free, to_notify, first, cfg["streak_min"])
+        if not notify(cfg, subject, body):
             # 没发出去就别记成「已知」，下一轮还会再提醒
             free = {k: v for k, v in free.items() if k in old}
 
@@ -641,6 +740,33 @@ def inspect(cfg):
             print(f"\n按当前 parser 解析出错：{e}")
 
 
+def test_email_body(cfg):
+    """测试邮件里附上两种提醒的格式示例。"""
+    today = now().date()
+    d1 = (today + timedelta(days=1)).strftime(cfg["date_format"])
+    d3 = (today + timedelta(days=3)).strftime(cfg["date_format"])
+    sample = [
+        {"date": d1, "time": "11:00-12:00", "court": "羽1"},
+        {"date": d3, "time": "19:00-20:00", "court": "羽2"},
+        {"date": d3, "time": "20:00-21:00", "court": "羽2"},
+        {"date": d3, "time": "10:00-11:00", "court": "羽5"},
+    ]
+    free = {slot_key(x): x for x in sample}
+    k = list(free)
+    s1, b1 = compose_email({k[0]: free[k[0]]}, [k[0]], False, cfg["streak_min"])
+    s2, b2 = compose_email(free, k[1:], False, cfg["streak_min"])
+    m = re.fullmatch(r"\^(\D+)\[(\d)-(\d)\]\$", cfg["court_regex"] or "")
+    courts = f"{m[1]}{m[2]}-{m[1]}{m[3]}" if m else cfg["court_regex"]
+    rules = [f"只看 {courts}" if courts else "",
+             f"只看 {cfg['time_range'][0]}-{cfg['time_range'][1]}" if cfg["time_range"] else "",
+             f"同一场地连续 ≥{cfg['streak_min']} 场为特别提醒"]
+    return ("收到这封邮件说明邮箱配置正确。\n"
+            f"当前规则：{'；'.join(x for x in rules if x)}；同一个空场只提醒一次。\n\n"
+            "下面是提醒格式示例（不是真实空场）：\n\n"
+            f"━━ 普通提醒 ━━\n标题：{s1}\n{b1}\n\n"
+            f"━━ 特别提醒 ━━\n标题：{s2}\n{b2}")
+
+
 # ---------------------------------------------------------------- 入口
 
 
@@ -658,7 +784,7 @@ def main():
     cfg = load_config(args.config)
 
     if args.test_email:
-        send_email(cfg, "🏸 羽毛球监控测试邮件", f"收到这封邮件说明邮箱配置正确。\n{now():%Y-%m-%d %H:%M:%S}")
+        send_email(cfg, "🏸 羽毛球监控测试邮件", test_email_body(cfg))
     elif args.inspect:
         inspect(cfg)
     elif args.check:

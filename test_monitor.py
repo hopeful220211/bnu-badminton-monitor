@@ -99,9 +99,82 @@ class RunOnceTest(unittest.TestCase):
         self.run_with([[a], [a], [a, b], [b], [a, b]])
         # 首轮 a；第三轮新增 b；第五轮 a 被退出来重新出现
         self.assertEqual(len(self.sent), 3)
-        self.assertIn("当前空余场地", self.sent[0])
+        self.assertIn("当前空场", self.sent[0])
         self.assertIn("19:00", self.sent[1])
         self.assertIn("18:00", self.sent[2])
+
+
+class RulesTest(unittest.TestCase):
+    """10-22 点、只看羽1-羽8、连续场特别提醒、邮件格式。"""
+
+    def setUp(self):
+        self.cfg = m.load_config(Path(__file__).parent / "config.json")
+        self.today = m.now().date()
+
+    def d(self, n):
+        return (self.today + m.timedelta(days=n)).strftime("%Y-%m-%d")
+
+    def s(self, n, t, court):
+        return {"date": self.d(n), "time": t, "court": court}
+
+    def test_filters(self):
+        ok = lambda t, c: m.wanted(self.s(1, t, c), self.cfg)
+        self.assertTrue(ok("10:00-11:00", "羽1"))
+        self.assertTrue(ok("21:00-22:00", "羽8"))
+        self.assertFalse(ok("09:00-10:00", "羽1"))
+        self.assertFalse(ok("08:00-09:00", "羽4"))
+        self.assertFalse(ok("12:00-13:00", "小综合1"))
+        self.assertFalse(ok("12:00-13:00", "二层东"))
+        self.assertFalse(ok("12:00-13:00", "羽10"))
+
+    def test_format(self):
+        self.assertEqual(m.short_time("08:00-09:00"), "8-9点")
+        self.assertEqual(m.short_time("10:00-11:00"), "10-11点")
+        self.assertEqual(m.short_time("18:30-19:30"), "18:30-19:30点")
+        self.assertEqual(m.date_label(self.d(0)), f"{self.d(0)}（今天）")
+        self.assertEqual(m.date_label(self.d(1)), f"{self.d(1)}（明天）")
+        self.assertEqual(m.date_label(self.d(3)), f"{self.d(3)}（大后天）")
+        self.assertEqual(m.slot_text(self.s(2, "08:00-09:00", "羽4")), f"{self.d(2)}（后天） 8-9点 羽4")
+
+    def free(self, *slots):
+        return {m.slot_key(x): x for x in slots}
+
+    def test_regular_email(self):
+        f = self.free(self.s(1, "11:00-12:00", "羽1"), self.s(1, "13:00-14:00", "羽1"))
+        subject, body = m.compose_email(f, list(f), False, 2)
+        self.assertTrue(subject.startswith("🏸 新空场："))
+        self.assertNotIn("特别", subject)
+        for word in ("邱季端", "去预约", "检测时间", ":00"):
+            self.assertNotIn(word, body)
+        self.assertIn("11-12点 羽1", body)
+
+    def test_streak_email(self):
+        old = self.s(1, "11:00-12:00", "羽1")
+        new = self.s(1, "12:00-13:00", "羽1")
+        other = self.s(1, "12:00-13:00", "羽2")
+        f = self.free(old, new, other)
+        subject, body = m.compose_email(f, [m.slot_key(new), m.slot_key(other)], False, 2)
+        self.assertIn("特别提醒", subject)
+        self.assertIn("11-13点 羽1（连续2小时）", subject)
+        self.assertIn("其他新空场（1 个）", body)
+        self.assertIn("12-13点 羽2", body)
+
+    def test_streak_only_when_new_slot_involved(self):
+        a, b = self.s(1, "11:00-12:00", "羽1"), self.s(1, "12:00-13:00", "羽1")
+        c = self.s(2, "15:00-16:00", "羽3")
+        f = self.free(a, b, c)
+        subject, _ = m.compose_email(f, [m.slot_key(c)], False, 2)
+        self.assertNotIn("特别提醒", subject)
+
+    def test_streak_needs_same_court_and_adjacent(self):
+        f = self.free(self.s(1, "11:00-12:00", "羽1"), self.s(1, "12:00-13:00", "羽2"),
+                      self.s(1, "14:00-15:00", "羽1"))
+        self.assertEqual(m.find_runs(f, 2), [])
+
+    def test_test_email_body(self):
+        body = m.test_email_body(self.cfg)
+        self.assertIn("特别提醒", body)
+        self.assertIn("连续2小时", body)
 
     def test_failed_email_retries_next_round(self):
         a = {"date": "2099-01-01", "time": "18:00", "court": "1"}
