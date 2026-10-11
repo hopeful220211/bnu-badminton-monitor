@@ -1,0 +1,32 @@
+{
+  "_说明": "parser 部分要根据北师大接口的真实返回来填，先运行 python monitor.py --inspect 看结构。下面是占位示例。",
+
+  "booking_url": "https://tycg.bnu.edu.cn/www/dd/vue/spa/zhcg#/",
+
+  "date_in_request": "2026-10-14",
+  "date_format": "%Y-%m-%d",
+  "day_offsets": [0, 1, 2, 3],
+
+  "interval_seconds": 60,
+  "active_hours": ["06:30", "23:30"],
+  "burst_windows": [{"start": "06:58", "end": "07:20", "interval_seconds": 10}],
+
+  "include_times": [],
+  "include_courts": [],
+  "notify_first_run": true,
+  "failure_alert_after": 5,
+  "daily_report_at": "",
+
+  "parser": {
+    "ok_when": {"field": "code", "in": [200, 0, "200", "0"]},
+    "message_field": "msg",
+    "list_path": "data.*",
+    "free_when": {"field": "status", "in": [0]},
+    "fields": {"time": "time", "court": "name"}
+  },
+
+  "smtp": {
+    "host": "smtp.qq.com",
+    "port": 465
+  }
+}

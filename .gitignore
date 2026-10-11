@@ -1,0 +1,7 @@
+# 含登录 Cookie / 邮箱授权码，千万不要提交
+request.txt
+secrets*.json
+# 运行状态
+state*.json
+*.tmp
+__pycache__/

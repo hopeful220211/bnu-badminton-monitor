@@ -1,0 +1,18 @@
+{
+  "request_file": "request.demo.txt",
+  "state_file": "state.demo.json",
+  "booking_url": "http://127.0.0.1:8765",
+  "date_in_request": "2026-10-14",
+  "day_offsets": [0, 1, 2, 3],
+  "interval_seconds": 5,
+  "active_hours": ["00:00", "24:00"],
+  "burst_windows": [],
+  "parser": {
+    "ok_when": {"field": "code", "in": [200]},
+    "message_field": "msg",
+    "list_path": "data.courts.*.slots.*",
+    "free_when": {"field": "status", "in": [0]},
+    "fields": {"time": "time", "court": "../name"}
+  },
+  "smtp": {"dry_run": true}
+}

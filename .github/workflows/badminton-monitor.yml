@@ -1,0 +1,78 @@
+name: badminton-monitor
+
+# GitHub 的定时触发不准时，还经常漏触发，所以每次触发后在 job 里连续轮询最多 5.5 小时，
+# 用 concurrency 让前后两班接力，覆盖北京时间 06:30–23:30。
+# 北京时间 06:40（UTC 22:40）额外排一班，保证 7 点放场时有一班正在跑。
+# 注意：只有放在仓库根目录、并且在默认分支上的工作流才会按 schedule 定时运行。
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+    - cron: "40 22 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "手动运行：loop=正常监控 / test-email=发测试邮件 / check=查一轮看日志"
+        type: choice
+        options: [loop, test-email, check]
+        default: loop
+
+concurrency:
+  group: badminton-monitor
+  cancel-in-progress: false
+
+# contents: write 用于 keepalive 空提交（仓库 60 天没有提交，GitHub 会自动停用定时任务）
+permissions:
+  contents: write
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Keepalive
+        run: |
+          last=$(git log -1 --format=%ct)
+          days=$(( ( $(date +%s) - last ) / 86400 ))
+          echo "距上次提交 ${days} 天"
+          if [ "$days" -ge 40 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "keepalive [skip ci]"
+            git push
+          fi
+
+      # 跨班次保留「已提醒过的空位」，避免重复发邮件
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: badminton-state-${{ github.run_id }}
+          restore-keys: badminton-state-
+
+      - name: Run monitor
+        env:
+          BNU_REQUEST_CURL: ${{ secrets.BNU_REQUEST_CURL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          case "${{ inputs.mode }}" in
+            test-email) python monitor.py --test-email ;;
+            check)      python monitor.py --check ;;
+            *)          python monitor.py --ci-loop 19800 ;;
+          esac
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: badminton-state-${{ github.run_id }}
