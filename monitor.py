@@ -42,6 +42,7 @@ DEFAULTS = {
     "date_in_request": "",
     "date_format": "%Y-%m-%d",
     "day_offsets": [0, 1, 2, 3],
+    "release_time": "",
     "interval_seconds": 60,
     "active_hours": ["06:30", "23:30"],
     "burst_windows": [{"start": "06:58", "end": "07:20", "interval_seconds": 10}],
@@ -310,8 +311,8 @@ def slot_key(slot):
 
 
 def slot_text(slot):
-    main = [slot.get("date", ""), slot.get("time", ""), slot.get("court", "")]
-    extra = [f"{k}:{v}" for k, v in slot.items() if k not in ("date", "time", "court") and v]
+    main = [slot.get(k, "") for k in ("date", "time", "court", "where")]
+    extra = [f"{k}:{v}" for k, v in slot.items() if k not in ("date", "time", "court", "where") and v]
     return "  ".join(x for x in main + extra if x)
 
 
@@ -394,9 +395,13 @@ def save_state(path, state):
 # ---------------------------------------------------------------- 一轮检查
 
 
-def target_dates(cfg):
-    today = now().date()
-    return [(today + timedelta(days=d)).strftime(cfg["date_format"]) for d in cfg["day_offsets"]]
+def target_dates(cfg, t=None):
+    """要查的日期。放场时间(release_time)之前不查最远的那天，免得把未放出的场当成空位。"""
+    t = t or now()
+    last = max(cfg["day_offsets"])
+    rel = cfg.get("release_time")
+    offsets = [d for d in cfg["day_offsets"] if not (rel and d == last and t.strftime("%H:%M") < rel)]
+    return [(t.date() + timedelta(days=d)).strftime(cfg["date_format"]) for d in offsets]
 
 
 def load_request(cfg):
@@ -411,13 +416,23 @@ def load_request(cfg):
 
 
 def query_all(cfg):
+    """返回 (空位字典, 查询失败的日期)。只有全部日期都失败才抛异常。"""
     base = load_request(cfg)
-    slots = []
+    slots, failed, last_err = [], [], None
     dates = target_dates(cfg) if cfg["date_in_request"] else [""]
     for d in dates:
-        text = fetch(substitute(base, cfg["date_in_request"], d), cfg["timeout_seconds"])
-        slots += extract_free_slots(text, cfg["parser"], d)
-    return {slot_key(s): s for s in slots if wanted(s, cfg)}
+        try:
+            text = fetch(substitute(base, cfg["date_in_request"], d), cfg["timeout_seconds"])
+            slots += extract_free_slots(text, cfg["parser"], d)
+        except SessionExpired:
+            raise
+        except Exception as e:
+            log(f"{d or '查询'} 失败：{type(e).__name__}: {e}")
+            failed.append(d)
+            last_err = e
+    if dates and len(failed) == len(dates):
+        raise last_err
+    return {slot_key(s): s for s in slots if wanted(s, cfg)}, failed
 
 
 def run_once(cfg, st, send=True):
@@ -430,7 +445,7 @@ def run_once(cfg, st, send=True):
         counts.pop(d)
 
     try:
-        free = query_all(cfg)
+        free, failed = query_all(cfg)
     except SessionExpired as e:
         log(f"登录失效：{e}")
         if send and st.get("alerted") != "session":
@@ -460,8 +475,10 @@ def run_once(cfg, st, send=True):
 
     old = st.get("free", {})
     first = "free" not in st
+    # 这轮没查成功的日期，沿用上一轮的结果，免得下一轮把它们当成「新空位」
+    kept = {k: v for k, v in old.items() if any(f"date={d}" in k.split(" | ") for d in failed)}
     new_keys = sorted(k for k in free if k not in old)
-    gone = [k for k in old if k not in free]
+    gone = [k for k in old if k not in free and k not in kept]
     log(f"当前空位 {len(free)} 个，新增 {len(new_keys)}，被订走 {len(gone)}")
     for k in new_keys:
         log(f"  + {slot_text(free[k])}")
@@ -483,6 +500,7 @@ def run_once(cfg, st, send=True):
     if send:
         maybe_daily_report(cfg, st, free)
     st["free"] = {k: old.get(k, stamp) for k in free}  # 值 = 首次发现时间
+    st["free"].update(kept)
     return True
 
 
