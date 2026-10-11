@@ -740,6 +740,22 @@ def inspect(cfg):
             print(f"\n按当前 parser 解析出错：{e}")
 
 
+def sample_alerts(cfg):
+    """按真实提醒的格式各发一封：普通空场、连续场。标题加 [测试]，免得当成真空场去抢。"""
+    today = now().date()
+    d1 = (today + timedelta(days=1)).strftime(cfg["date_format"])
+    d3 = (today + timedelta(days=3)).strftime(cfg["date_format"])
+    note = "\n\n（测试邮件，不是真实空场）"
+    single = {"date": d1, "time": "11:00-12:00", "court": "羽1"}
+    subject, body = compose_email({slot_key(single): single}, [slot_key(single)], False, cfg["streak_min"])
+    send_email(cfg, "[测试] " + subject, body + note)
+    old = {"date": d3, "time": "19:00-20:00", "court": "羽2"}
+    new = [{"date": d3, "time": "20:00-21:00", "court": "羽2"}, {"date": d3, "time": "10:00-11:00", "court": "羽5"}]
+    free = {slot_key(x): x for x in [old] + new}
+    subject, body = compose_email(free, [slot_key(x) for x in new], False, cfg["streak_min"])
+    send_email(cfg, "[测试] " + subject, body + note)
+
+
 def test_email_body(cfg):
     """测试邮件里附上两种提醒的格式示例。"""
     today = now().date()
@@ -775,6 +791,7 @@ def main():
     ap.add_argument("-c", "--config", default=str(HERE / "config.json"))
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--test-email", action="store_true", help="发送测试邮件")
+    g.add_argument("--sample-alerts", action="store_true", help="按真实格式发普通、连续场提醒各一封（标题带 [测试]）")
     g.add_argument("--inspect", action="store_true", help="打印返回结构，帮你填 parser")
     g.add_argument("--check", action="store_true", help="查一轮，只打印不发邮件")
     g.add_argument("--once", action="store_true", help="查一轮，有新空位就发邮件")
@@ -785,6 +802,8 @@ def main():
 
     if args.test_email:
         send_email(cfg, "🏸 羽毛球监控测试邮件", test_email_body(cfg))
+    elif args.sample_alerts:
+        sample_alerts(cfg)
     elif args.inspect:
         inspect(cfg)
     elif args.check:

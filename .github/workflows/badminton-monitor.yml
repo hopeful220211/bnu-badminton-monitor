@@ -11,14 +11,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "手动运行：loop=正常监控 / fresh-loop=清空已提醒记录后监控（当前空位重发一遍）/ test-email=发测试邮件 / check=查一轮看日志"
+        description: "手动运行：loop=正常监控 / fresh-loop=清空已提醒记录后监控（当前空位重发一遍）/ test-email=发测试邮件 / sample-alerts=按真实格式发普通、连续场提醒各一封 / check=查一轮看日志"
         type: choice
-        options: [loop, fresh-loop, test-email, check]
+        options: [loop, fresh-loop, test-email, sample-alerts, check]
         default: loop
 
 # 定时/loop 共用一个队列前后接力；手动的 test-email、check 单独排队，不用等长跑结束
 concurrency:
-  group: badminton-monitor-${{ (inputs.mode == 'test-email' || inputs.mode == 'check') && inputs.mode || 'loop' }}
+  group: badminton-monitor-${{ (inputs.mode == 'test-email' || inputs.mode == 'sample-alerts' || inputs.mode == 'check') && inputs.mode || 'loop' }}
   cancel-in-progress: false
 
 # contents: write 用于 keepalive 空提交（仓库 60 天没有提交，GitHub 会自动停用定时任务）
@@ -66,12 +66,13 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
-          if [ -z "$BNU_REQUEST_CURL" ] && [ "${{ inputs.mode }}" != "test-email" ]; then
+          if [ -z "$BNU_REQUEST_CURL" ] && [ "${{ inputs.mode }}" != "test-email" ] && [ "${{ inputs.mode }}" != "sample-alerts" ]; then
             echo "还没配置 Secret BNU_REQUEST_CURL，跳过本次监控"
             exit 0
           fi
           case "${{ inputs.mode }}" in
             test-email) python monitor.py --test-email ;;
+            sample-alerts) python monitor.py --sample-alerts ;;
             check)      python monitor.py --check ;;
             *)          python monitor.py --ci-loop 19800 ;;   # loop / fresh-loop / 定时触发
           esac

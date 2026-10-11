@@ -171,6 +171,15 @@ class RulesTest(unittest.TestCase):
                       self.s(1, "14:00-15:00", "羽1"))
         self.assertEqual(m.find_runs(f, 2), [])
 
+    def test_sample_alerts(self):
+        sent = []
+        with mock.patch.object(m, "send_email", lambda c, subj, body: sent.append((subj, body))):
+            m.sample_alerts(self.cfg)
+        self.assertEqual(len(sent), 2)
+        self.assertTrue(sent[0][0].startswith("[测试] 🏸 新空场："))
+        self.assertTrue(sent[1][0].startswith("[测试] 🔥 特别提醒·连续场："))
+        self.assertIn("19-21点 羽2（连续2小时）", sent[1][0])
+
     def test_test_email_body(self):
         body = m.test_email_body(self.cfg)
         self.assertIn("特别提醒", body)
