@@ -29,7 +29,7 @@ import zlib
 from datetime import datetime, timedelta, timezone
 from email.header import Header
 from email.mime.text import MIMEText
-from email.utils import formataddr
+from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
 
 BEIJING = timezone(timedelta(hours=8))
@@ -91,7 +91,7 @@ def load_config(path):
     cfg["smtp"] = dict(cfg["smtp"])
     for env, key in ENV_SMTP.items():
         if os.environ.get(env):
-            cfg["smtp"][key] = os.environ[env]
+            cfg["smtp"][key] = os.environ[env].strip()
     if isinstance(cfg["smtp"].get("to"), str) and "," in cfg["smtp"]["to"]:
         cfg["smtp"]["to"] = [x.strip() for x in cfg["smtp"]["to"].split(",") if x.strip()]
     return cfg
@@ -348,11 +348,15 @@ def send_email(cfg, subject, body):
         if not smtp.get(k):
             raise RuntimeError(f"邮箱没配置 {k}（config.json 的 smtp，或环境变量 SMTP_*）")
     to = smtp.get("to") or smtp["user"]
-    to_list = to if isinstance(to, list) else [to]
+    to_list = [x.strip() for x in (to if isinstance(to, list) else [to]) if x.strip()]
+    sender = smtp["user"].strip()
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = Header(subject, "utf-8")
-    msg["From"] = formataddr(("羽毛球场监控", smtp["user"]))
+    msg["From"] = formataddr(("羽毛球场监控", sender))
     msg["To"] = ", ".join(to_list)
+    # 缺 Date / Message-ID 的邮件容易被收件方当成垃圾邮件
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=sender.rpartition("@")[2] or None)
     port = int(smtp.get("port") or 465)
     ctx = ssl.create_default_context()
     if port == 465:
@@ -361,9 +365,25 @@ def send_email(cfg, subject, body):
         server = smtplib.SMTP(smtp["host"], port, timeout=20)
         server.starttls(context=ctx)
     with server:
-        server.login(smtp["user"], smtp["password"])
-        server.sendmail(smtp["user"], to_list, msg.as_string())
-    log(f"已发邮件：{subject}")
+        server.login(sender, smtp["password"])
+        code, resp = server.mail(sender)
+        if code != 250:
+            raise smtplib.SMTPSenderRefused(code, resp, sender)
+        for r in to_list:
+            code, resp = server.rcpt(r)
+            if code not in (250, 251):
+                raise smtplib.SMTPRecipientsRefused({_mask(r): (code, resp)})
+        code, resp = server.data(msg.as_string())
+        if code != 250:
+            raise smtplib.SMTPDataError(code, resp)
+    reply = resp.decode("utf-8", "replace") if isinstance(resp, bytes) else str(resp)
+    log(f"已发邮件：{subject}（{_mask(sender)} → {', '.join(map(_mask, to_list))}，服务器回复 {code} {reply}）")
+
+
+def _mask(addr):
+    """日志是公开的，邮箱只露前两位和域名。"""
+    name, _, domain = addr.partition("@")
+    return f"{name[:2]}***@{domain}" if domain else "***"
 
 
 def notify(cfg, subject, body):

@@ -177,10 +177,26 @@ class SmtpTest(unittest.TestCase):
         cfg = {"smtp": {"host": "smtp.qq.com", "port": "465", "user": "a@qq.com",
                         "password": "code", "to": ["b@x.com"]}}
         with mock.patch.object(m.smtplib, "SMTP_SSL") as ssl_cls:
+            server = ssl_cls.return_value
+            server.mail.return_value = (250, b"OK")
+            server.rcpt.return_value = (250, b"OK")
+            server.data.return_value = (250, b"OK: queued as 123")
             m.send_email(cfg, "标题", "正文")
-        server = ssl_cls.return_value
         server.login.assert_called_once_with("a@qq.com", "code")
-        self.assertEqual(server.sendmail.call_args[0][1], ["b@x.com"])
+        server.rcpt.assert_called_once_with("b@x.com")
+        raw = server.data.call_args[0][0]
+        self.assertIn("Message-ID:", raw)
+        self.assertIn("Date:", raw)
+
+    def test_recipient_refused(self):
+        cfg = {"smtp": {"host": "smtp.qq.com", "user": "a@qq.com", "password": "c", "to": "bad@x.com "}}
+        with mock.patch.object(m.smtplib, "SMTP_SSL") as ssl_cls:
+            server = ssl_cls.return_value
+            server.mail.return_value = (250, b"OK")
+            server.rcpt.return_value = (550, b"Mailbox not found")
+            with self.assertRaises(m.smtplib.SMTPRecipientsRefused):
+                m.send_email(cfg, "标题", "正文")
+        server.rcpt.assert_called_once_with("bad@x.com")
 
 
 if __name__ == "__main__":
