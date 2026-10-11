@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "手动运行：loop=正常监控 / test-email=发测试邮件 / check=查一轮看日志"
+        description: "手动运行：loop=正常监控 / fresh-loop=清空已提醒记录后监控（当前空位重发一遍）/ test-email=发测试邮件 / check=查一轮看日志"
         type: choice
-        options: [loop, test-email, check]
+        options: [loop, fresh-loop, test-email, check]
         default: loop
 
 # 定时/loop 共用一个队列前后接力；手动的 test-email、check 单独排队，不用等长跑结束
@@ -50,6 +50,7 @@ jobs:
 
       # 跨班次保留「已提醒过的空位」，避免重复发邮件
       - name: Restore state
+        if: inputs.mode != 'fresh-loop'
         uses: actions/cache/restore@v4
         with:
           path: state.json
@@ -72,7 +73,7 @@ jobs:
           case "${{ inputs.mode }}" in
             test-email) python monitor.py --test-email ;;
             check)      python monitor.py --check ;;
-            *)          python monitor.py --ci-loop 19800 ;;
+            *)          python monitor.py --ci-loop 19800 ;;   # loop / fresh-loop / 定时触发
           esac
 
       - name: Save state
